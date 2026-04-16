@@ -1,6 +1,6 @@
 # RAG Basic — Hệ thống hỏi đáp tài liệu PDF
 
-Hệ thống RAG (Retrieval-Augmented Generation) đơn giản, cho phép hỏi đáp dựa trên tài liệu PDF bằng tiếng Việt. Sử dụng **BGE-M3** để embedding và **Gemini** để sinh câu trả lời — hoàn toàn miễn phí.
+Hệ thống RAG (Retrieval-Augmented Generation) đơn giản, cho phép hỏi đáp dựa trên tài liệu PDF bằng tiếng Việt. Sử dụng **BGE-M3** để embedding và **Gemini** để sinh câu trả lời
 
 ---
 
