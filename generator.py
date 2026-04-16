@@ -1,11 +1,35 @@
 import google.generativeai as genai
 from retriever import retrieve, format_context
 from config import GEMINI_API_KEY, GEMINI_MODEL, TOP_K
+from chat_history import ChatHistory
 
 genai.configure(api_key=GEMINI_API_KEY)
 llm = genai.GenerativeModel(GEMINI_MODEL)
 
-def build_prompt(query: str, chunks: list[dict]) -> str:
+def rephrase_query(query: str, history: ChatHistory) -> str:
+    if len(history) == 0:
+        return query
+    
+    prompt = f"""Dựa vào lịch sử hội thoại bên dưới, hãy viết lại câu hỏi cuối
+thành một câu hỏi độc lập, đầy đủ ngữ cảnh, không cần đọc lịch sử vẫn hiểu được.
+
+Chỉ trả về câu hỏi đã viết lại, không giải thích gì thêm.
+
+LỊCH SỬ HỘI THOẠI:
+{history.format_for_prompt}
+
+CÂU HỎI ĐỘC LẬP:"""
+    
+    response = llm.generate_content(prompt)
+    rephrased = response.text.strip()
+    print(f"[Rephrased] '{query}' -> '{rephrased}'")
+    return rephrased
+
+def build_prompt(query: str, chunks: list[dict], history: ChatHistory) -> str:
+
+    history_text = history.format_for_prompt()
+    history_section = f"\nLỊCH SỬ HỘI THOẠI:\n{history_text}\n" if history_text else ""
+
     context = format_context(chunks)
     return f"""Bạn là trợ lý AI chuyên trả lời câu hỏi dựa trên tài liệu được cung cấp.
 
@@ -14,7 +38,7 @@ Quy tắc:
 - Luôn trích dẫn số trang ở cuối mỗi ý, ví dụ: (Trang 12).
 - Nếu không tìm thấy thông tin, hãy nói: "Tài liệu không đề cập đến vấn đề này."
 - Trả lời bằng tiếng Việt, rõ ràng và súc tích.
-
+{history_section}
 CONTEXT:
 {context}
 
@@ -22,13 +46,20 @@ CÂU HỎI: {query}
 
 TRẢ LỜI:"""
 
-def rag(query: str, top_k: int = TOP_K) -> dict:
+def rag(query: str, history: ChatHistory, top_k: int = TOP_K) -> dict:
+
+    search_query = rephrase_query(query, history)
     chunks   = retrieve(query, top_k=top_k)
-    prompt   = build_prompt(query, chunks)
+    prompt   = build_prompt(query, chunks, history)
     response = llm.generate_content(prompt)
+    answer = response.text
+    history.add("user", query)
+    history.add("assistant", answer)
+
     return {
         "question": query,
-        "answer":   response.text,
+        "rephrased": search_query,
+        "answer":   answer,
         "sources":  [{"page": c["page"], "score": c["score"]} for c in chunks],
     }
 
