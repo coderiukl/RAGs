@@ -71,6 +71,22 @@ def save_to_chromadb(chunks, embeddings):
             metadatas = [{"page": c['page'], "source": c['source']} for c in bc],
         )
     print(f"Saved {collection.count()} chunks into vector DB")
+
+def index_multiple_pdfs(filepaths: list[str]):
+    all_chunks = []
+
+    for pdf_path in filepaths:
+        print(f"Processing: {os.path.basename(pdf_path)}")
+        pages = extract_text_from_pdf(pdf_path)
+        chunks = split_into_chunks(pages)
+        all_chunks.extend(chunks)
+        print(f"{len(chunks)} chunks")
+    
+    print(f"\nTotal: {len(all_chunks)} chunks from {len(filepaths)} file")
+
+    embeddings = embed_chunks(all_chunks)
+    save_to_chromadb(all_chunks, embeddings)
+
     
 def main():
     pages = extract_text_from_pdf(PDF_PATH)

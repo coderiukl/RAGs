@@ -2,7 +2,7 @@ import tempfile, os
 import streamlit as st
 from generator import rag
 from chat_history import ChatHistory
-from indexer import extract_text_from_pdf, split_into_chunks, embed_chunks, save_to_chromadb
+from indexer import extract_text_from_pdf, split_into_chunks, embed_chunks, save_to_chromadb, index_multiple_pdfs
 
 st.set_page_config(
     page_title="RAG Chat",
@@ -24,44 +24,60 @@ if "indexed" not in st.session_state:
 with st.sidebar:
     st.header("Tài liệu")
 
-    uploaded_file = st.file_uploader(
+    uploaded_files = st.file_uploader(
         "Upload file PDF",
         type=["pdf"],
+        accept_multiple_files=True,
         help="Hỗ trợ tiếng Việt"
     )
 
-    if uploaded_file and not st.session_state.indexed:
+    if uploaded_files and not st.session_state.indexed:
         if st.button("Bắt đầu Index", type="primary", use_container_width=True):
-            with st.spinner("Đang xử lý PDF..."):
-                # Lưu file tạm
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                    tmp.write(uploaded_file.read())
-                    tmp_path = tmp.name
+            tmp_paths = []
+            try:
+                with st.spinner("Đang xử lý..."):
+                    progress = st.progress(0, text="Chuẩn bị...")
 
-                try:
-                    # Chạy indexing pipeline
-                    progress = st.progress(0, text="Đọc PDF...")
-                    pages = extract_text_from_pdf(tmp_path)
+                    # Lưu tất cả file tạm
+                    for f in uploaded_files:
+                        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+                        tmp.write(f.read())
+                        tmp.close()
+                        tmp_paths.append((tmp.name, f.name))
 
-                    progress.progress(30, text="Chia chunks...")
-                    chunks = split_into_chunks(pages)
+                    all_chunks = []
+                    for idx, (tmp_path, original_name) in enumerate(tmp_paths):
+                        pct = int((idx / len(tmp_paths)) * 80)
+                        progress.progress(pct, text=f"Đọc {original_name}...")
 
-                    progress.progress(50, text=f"Embedding {len(chunks)} chunks...")
-                    embeddings = embed_chunks(chunks)
+                        pages = extract_text_from_pdf(tmp_path)
+                        # Ghi đè source = tên file gốc (không phải tên tmp)
+                        for p in pages:
+                            p["source"] = original_name
+                        chunks = split_into_chunks(pages)
+                        all_chunks.extend(chunks)
 
-                    progress.progress(85, text="Lưu vào ChromaDB...")
-                    save_to_chromadb(chunks, embeddings)
+                    progress.progress(82, text=f"Embedding {len(all_chunks)} chunks...")
+                    embeddings = embed_chunks(all_chunks)
+
+                    progress.progress(95, text="Lưu vào ChromaDB...")
+                    save_to_chromadb(all_chunks, embeddings)
 
                     progress.progress(100, text="Hoàn tất!")
                     st.session_state.indexed = True
-                    st.session_state.pdf_name = uploaded_file.name
-                    st.success(f"✓ Index xong {len(chunks)} chunks")
+                    st.session_state.indexed_files = [f.name for f in uploaded_files]
+                    st.success(f"✓ Index xong {len(all_chunks)} chunks từ {len(uploaded_files)} file")
 
-                finally:
-                    os.unlink(tmp_path)  # xóa file tạm
+            finally:
+                for tmp_path, _ in tmp_paths:
+                    os.unlink(tmp_path)
 
+    # Hiện danh sách file đã index
     if st.session_state.indexed:
-        st.success(f"✓ {st.session_state.get('pdf_name', 'PDF')} đã sẵn sàng")
+        st.success("Sẵn sàng hỏi đáp")
+        with st.expander(f"{len(st.session_state.indexed_files)} file đã index"):
+            for name in st.session_state.indexed_files:
+                st.caption(f"📄 {name}")
 
         col1, col2 = st.columns(2)
         with col1:
@@ -72,6 +88,7 @@ with st.sidebar:
         with col2:
             if st.button("Đổi tài liệu", use_container_width=True):
                 st.session_state.indexed = False
+                st.session_state.indexed_files = []
                 st.session_state.history.clear()
                 st.session_state.messages = []
                 st.rerun()
@@ -81,45 +98,45 @@ with st.sidebar:
     top_k = st.slider("Top-K chunks", 3, 15, 5)
     min_score = st.slider("Min score", 0.1, 0.9, 0.4, step=0.05)
 
-
-# ── Khu vực chat ──────────────────────────────────────────
-# Hiển thị lịch sử chat
+# ── Chat area ──────────────────────────────────────────────
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if msg["role"] == "assistant" and "sources" in msg:
             with st.expander("Nguồn tham khảo"):
                 for src in msg["sources"]:
-                    st.caption(f"Trang {src['page']} — score: {src['score']}")
+                    st.caption(f"📄 {src['source']} — Trang {src['page']} (score: {src['score']})")
 
-# Input câu hỏi
 if not st.session_state.indexed:
-    st.info("Upload và index PDF ở sidebar để bắt đầu hỏi đáp.")
+    st.info("Upload và index PDF ở sidebar để bắt đầu.")
 else:
     if query := st.chat_input("Nhập câu hỏi..."):
-        # Hiện câu hỏi user
         st.session_state.messages.append({"role": "user", "content": query})
         with st.chat_message("user"):
             st.markdown(query)
 
-        # Sinh câu trả lời
         with st.chat_message("assistant"):
-            with st.spinner("Đang tìm kiếm và trả lời..."):
-                result = rag(query, st.session_state.history, top_k=top_k)
+            place_holder = st.empty()
+            full_text = ""
+            metadata = None
 
-            st.markdown(result["answer"])
+            for chunk in rag(query, st.session_state.history, top_k=top_k):
+                if isinstance(chunk, dict):
+                    metadata = chunk
+                else:
+                    full_text += chunk
+                    place_holder.markdown(full_text + "▌")
 
-            # Hiện nguồn tham khảo
-            with st.expander("Nguồn tham khảo"):
-                for src in result["sources"]:
-                    st.caption(f"Trang {src['page']} — score: {src['score']}")
+            place_holder.markdown(full_text)
+            if metadata:
+                with st.expander("Nguồn tham khảo"):
+                    for src in metadata["sources"]:
+                        st.caption(f"📄 {src['source']} — Trang {src['page']} (score: {src['score']})")
+                    if metadata["question"] != metadata["rephrased"]:
+                        st.caption(f"Rephrase: _{metadata['rephrased']}_")
 
-                if result["question"] != result["rephrased"]:
-                    st.caption(f"Câu hỏi đã rephrase: _{result['rephrased']}_")
-
-        # Lưu vào messages UI
         st.session_state.messages.append({
             "role": "assistant",
-            "content": result["answer"],
-            "sources": result["sources"],
+            "content": full_text,
+            "sources": metadata["sources"] if metadata else [],
         })

@@ -46,21 +46,25 @@ CÂU HỎI: {query}
 
 TRẢ LỜI:"""
 
-def rag(query: str, history: ChatHistory, top_k: int = TOP_K) -> dict:
-
+def rag(query: str, history: ChatHistory, top_k: int = TOP_K):
     search_query = rephrase_query(query, history)
     chunks   = retrieve(query, top_k=top_k)
     prompt   = build_prompt(query, chunks, history)
-    response = llm.generate_content(prompt)
-    answer = response.text
-    history.add("user", query)
-    history.add("assistant", answer)
+    response = llm.generate_content(prompt, stream=True)
+    full_answer  = []
+    for chunk in response:
+        text = chunk.text
+        full_answer += text
+        yield text
 
-    return {
+    history.add("user", query)
+    history.add("assistant", full_answer)
+
+    yield {
         "question": query,
         "rephrased": search_query,
-        "answer":   answer,
-        "sources":  [{"page": c["page"], "score": c["score"]} for c in chunks],
+        "answer": full_answer,
+        "sources":  [{"page": c["page"], "score": c["score"], 'source': c['source']} for c in chunks],
     }
 
 if __name__ == "__main__":
